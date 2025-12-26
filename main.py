@@ -1,84 +1,84 @@
-from typing import Annotated, List, Union
+from dotenv import load_dotenv
+import os
 
-from fastapi import Body, Cookie, FastAPI, Form, Path
-from pydantic import BaseModel, Field
+load_dotenv()  
 
-class item(BaseModel):
-    name: str
-    description: str | None = Field(
-        default=None, title= "The descruotuib if the items", max_length=300
-    )
-    price: float = Field(gt=0, description="The price must be greater than zero")
-    tax: Union[float, None] = None
-    tags: List[str] = []
+from fastapi import FastAPI, Depends, HTTPException, status
+from pydantic import BaseModel
+from google_oauth import verify_google_id_token, exchange_code_for_tokens
+from auth_utils import create_access_token, get_current_user_email
 
-app = FastAPI()
+app = FastAPI(title="資工 114-Backend 示範專案")
 
-@app.post("/login")
-async def login(
-    username: Annotated[str, Form()],
-    password: Annotated[str, Form()],
-):
-    return {"username": username}
+class TokenRequest(BaseModel):
+    id_token: str  
+
+class CodeRequest(BaseModel):
+    code: str
+    redirect_uri: str  
+
+@app.post("/auth/google/code", summary="Exchange code → JWT")
+async def google_auth_with_code(request: CodeRequest):
+
+    tokens = exchange_code_for_tokens(request.code, request.redirect_uri)
+
+    google_id_token = tokens.get("id_token")
+    if not google_id_token:
+        raise HTTPException(status_code=400, detail="Google did not return an id_token")
+
+    user_info = verify_google_id_token(google_id_token)
+
+    user_email = user_info.get("email")
+    if not user_email:
+        raise HTTPException(status_code=400, detail="Google did not provide the user's email")
+    
+    access_token = create_access_token(data={"sub": user_email})
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "name": user_info.get("name"),
+            "email": user_email,
+            "picture": user_info.get("picture")
+        },
+        "google_access_token": tokens.get("access_token"),
+    }  # <-- Fixed here
+
+@app.post("/auth/google", summary="Google ID token → Backend JWT")
+async def google_auth(request: TokenRequest):
+
+    # Step 1: Verify the Google ID token
+    user_info = verify_google_id_token(request.id_token)
+
+    # Step 2: Retrieve the user's email
+    user_email = user_info.get("email")
+    if not user_email:
+        raise HTTPException(status_code=400, detail="Google did not provide the user's email")
+    
+    access_token = create_access_token(data={"sub": user_email})
+
+    # Return response to frontend
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "name": user_info.get("name"),
+            "email": user_email,
+            "picture": user_info.get("picture")
+        }
+    }  # <-- Fixed here
+
+@app.get("/users/me", summary="Dapatkan informasi user saat ini")
+async def read_users_me(current_user: str = Depends(get_current_user_email)):
+    """
+    Hanya bisa diakses jika header membawa Authorization: Bearer <token> yang valid
+    """
+    return {
+        "msg": "Successfully passed JWT verification",
+        "user_email": current_user
+    }
 
 @app.get("/")
-async def root():
-    return{"message: Hello World!"}
-
-@app.get("/items/{item_id}")
-async def read_item(item_id):
-    return {"item_id":item_id}
-
-'''
-@app.get("/items/")
-async def read_item(skip: int = 0, limit: int = 10):
-    return fake_items_db[skip: skip + limit]
-
-fake_items_db = [
-    {"item_name" : "Foo"},             
-    {"item_name": "Bar"},
-    {"item_name": "Baz"} 
-]
-'''
-@app.get("/items/")
-async def read_item(ads_id: Annotated[str | None, Cookie()]) -> list[item]:
-        return {"ads_id": ads_id}
-
-
-'''
-@app.post("/items/")
-async def create_item(item: item):
-    item_dict = item.model_dump() #item.dict()
-    if item.tax is not None:
-        price_with_tax = item.price + item.tax
-        item_dict.update({"price_with_tax": price_with_tax})
-    return item_dict
-'''
-
-@app.post("/items/")
-async def create_item(item: item) -> item:
-    return item
-
-'''
-@app.put("/items/{item_id}")
-async def update_item(
-    item_id: Annotated [int, path(title = "THe ID of the item to get", ge = 0, le = 1000)],
-    q: str | None = None,
-    item : Item | None = None,  
-):
-    result = {"item_id": item_id}
-    if q:
-        result.update({"q":q})
-    return result
-    if item:
-            results.update({"items": item})
-    return results
-'''
-
-
-
-@app.put("/items/{item_id}")
-async def update_item(item_id: int, item: Annotated[item, Body(embed=True)]):
-    results = {"item_id": item_id, "item": item}
-    return results
-
+def root():
+    return {"message": "Hello FastAPI OAuth Demo"}
